@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -35,11 +36,16 @@ type App struct {
 }
 
 var phonePattern = regexp.MustCompile(`^\+?[0-9]{7,15}$`)
+var adminOrderClausePattern = regexp.MustCompile(`^t\.([a-zA-Z_][a-zA-Z0-9_]*)\s+(ASC|DESC)$`)
+var loggedAdminOrderFallbacks sync.Map
+var cachedAdminTableColumns sync.Map
 
 const (
 	healthTimeout       = 5 * time.Second
 	readTimeout         = 10 * time.Second
 	writeTimeout        = 12 * time.Second
+	adminListTimeout    = 20 * time.Second
+	adminMetaTimeout    = 5 * time.Second
 	storageUploadMaxMB  = 25
 	defaultStorageLimit = 50
 	maxStorageLimit     = 500
@@ -1483,7 +1489,7 @@ func (a *App) makeAdminTableCRUDHandler(cfg tableCRUDConfig) http.HandlerFunc {
 }
 
 func (a *App) adminFetchMany(w http.ResponseWriter, r *http.Request, cfg tableCRUDConfig) {
-	ctx, cancel := context.WithTimeout(r.Context(), readTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), adminListTimeout)
 	defer cancel()
 
 	orderBy := strings.TrimSpace(cfg.OrderBy)
@@ -1491,11 +1497,20 @@ func (a *App) adminFetchMany(w http.ResponseWriter, r *http.Request, cfg tableCR
 		orderBy = "t.id ASC"
 	}
 
+	metaCtx, metaCancel := context.WithTimeout(ctx, adminMetaTimeout)
+	resolvedOrderBy, err := a.resolveAdminListOrderBy(metaCtx, cfg.Table, orderBy)
+	metaCancel()
+	if err != nil {
+		log.Printf("admin list %s order resolution failed, using configured order '%s': %v", cfg.Table, orderBy, err)
+	} else {
+		orderBy = resolvedOrderBy
+	}
+
 	var raw []byte
-	if err := a.queryAdminList(ctx, cfg.Table, orderBy, &raw); err != nil {
+	if err := a.queryAdminListWithTimeout(ctx, cfg.Table, orderBy, &raw); err != nil {
 		if orderBy != "t.id ASC" {
 			log.Printf("admin list %s failed with order '%s': %v; retry with id ASC", cfg.Table, orderBy, err)
-			if retryErr := a.queryAdminList(ctx, cfg.Table, "t.id ASC", &raw); retryErr != nil {
+			if retryErr := a.queryAdminListWithTimeout(ctx, cfg.Table, "t.id ASC", &raw); retryErr != nil {
 				log.Printf("admin list %s retry failed: %v", cfg.Table, retryErr)
 				writeJSON(w, http.StatusInternalServerError, map[string]any{
 					"status":  "error",
@@ -1531,6 +1546,46 @@ func (a *App) adminFetchMany(w http.ResponseWriter, r *http.Request, cfg tableCR
 	})
 }
 
+func (a *App) resolveAdminListOrderBy(ctx context.Context, tableName, desired string) (string, error) {
+	orderBy := strings.TrimSpace(desired)
+	if orderBy == "" {
+		return "t.id ASC", nil
+	}
+
+	columns, err := a.loadAdminTableColumns(ctx, tableName)
+	if err != nil {
+		return "", err
+	}
+
+	clauses := strings.Split(orderBy, ",")
+	resolved := make([]string, 0, len(clauses))
+	for _, clause := range clauses {
+		clause = strings.TrimSpace(clause)
+		if clause == "" {
+			continue
+		}
+
+		match := adminOrderClausePattern.FindStringSubmatch(clause)
+		if len(match) != 3 {
+			return "", fmt.Errorf("unsupported order clause %q", clause)
+		}
+
+		columnName := match[1]
+		if _, exists := columns[columnName]; !exists {
+			logAdminOrderFallbackOnce(tableName, clause, columnName)
+			continue
+		}
+
+		resolved = append(resolved, clause)
+	}
+
+	if len(resolved) == 0 {
+		return "t.id ASC", nil
+	}
+
+	return strings.Join(resolved, ", "), nil
+}
+
 func (a *App) queryAdminList(ctx context.Context, tableName, orderBy string, out *[]byte) error {
 	query := fmt.Sprintf(
 		`SELECT COALESCE(json_agg(to_jsonb(t) ORDER BY %s), '[]'::json) FROM %s t`,
@@ -1538,6 +1593,12 @@ func (a *App) queryAdminList(ctx context.Context, tableName, orderBy string, out
 		quoteTableName(tableName),
 	)
 	return a.DB.QueryRowContext(ctx, query).Scan(out)
+}
+
+func (a *App) queryAdminListWithTimeout(parent context.Context, tableName, orderBy string, out *[]byte) error {
+	ctx, cancel := context.WithTimeout(parent, readTimeout)
+	defer cancel()
+	return a.queryAdminList(ctx, tableName, orderBy, out)
 }
 
 func (a *App) adminFetchOne(w http.ResponseWriter, r *http.Request, cfg tableCRUDConfig, id int64) {
@@ -1962,6 +2023,61 @@ func quoteTableName(value string) string {
 		quoted = append(quoted, quoteIdentifier(strings.TrimSpace(part)))
 	}
 	return strings.Join(quoted, ".")
+}
+
+func baseTableName(value string) string {
+	parts := strings.Split(strings.TrimSpace(value), ".")
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Trim(strings.TrimSpace(parts[len(parts)-1]), `"`)
+}
+
+func logAdminOrderFallbackOnce(tableName, clause, columnName string) {
+	key := tableName + "|" + columnName + "|" + clause
+	if _, loaded := loggedAdminOrderFallbacks.LoadOrStore(key, struct{}{}); loaded {
+		return
+	}
+	log.Printf("admin list %s: dropping order clause %q because column %s does not exist", tableName, clause, columnName)
+}
+
+func (a *App) loadAdminTableColumns(ctx context.Context, tableName string) (map[string]struct{}, error) {
+	if cached, ok := cachedAdminTableColumns.Load(tableName); ok {
+		return cached.(map[string]struct{}), nil
+	}
+
+	baseTable := baseTableName(tableName)
+	if baseTable == "" {
+		return nil, fmt.Errorf("invalid table name %q", tableName)
+	}
+
+	rows, err := a.DB.QueryContext(
+		ctx,
+		`SELECT column_name
+		FROM information_schema.columns
+		WHERE table_schema = 'public'
+		  AND table_name = $1`,
+		baseTable,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	columns := map[string]struct{}{}
+	for rows.Next() {
+		var columnName string
+		if err := rows.Scan(&columnName); err != nil {
+			return nil, err
+		}
+		columns[columnName] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	cachedAdminTableColumns.Store(tableName, columns)
+	return columns, nil
 }
 
 type supabaseStorageConfig struct {
