@@ -90,6 +90,123 @@
           ]
         }
       }
+    },
+    {
+      "name": "Contacts List",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/contacts",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "contacts"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Contact Create (protected)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"phone_number\": \"+1234567890\",\n  \"address\": \"Karachi\",\n  \"description\": \"Main office\",\n  \"email\": \"contact@example.com\",\n  \"work_schedule\": \"Mon-Fri 9:00-18:00\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/contacts",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "contacts"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Contact Get By ID",
+      "request": {
+        "method": "GET",
+        "url": {
+          "raw": "{{base_url}}/api/contacts/1",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "contacts",
+            "1"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Contact Update (protected)",
+      "request": {
+        "method": "PATCH",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          },
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"phone_number\": \"+1234567899\",\n  \"work_schedule\": \"Mon-Sat 10:00-19:00\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/api/contacts/1",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "contacts",
+            "1"
+          ]
+        }
+      }
+    },
+    {
+      "name": "Contact Delete (protected)",
+      "request": {
+        "method": "DELETE",
+        "header": [
+          {
+            "key": "Authorization",
+            "value": "Bearer {{access_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/api/contacts/1",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "api",
+            "contacts",
+            "1"
+          ]
+        }
+      }
     }
   ],
   "variable": [

@@ -35,6 +35,14 @@ type App struct {
 	DB *sql.DB
 }
 
+var contactsAPIConfig = tableCRUDConfig{
+	Path:             "/api/contacts",
+	Table:            "public.contact",
+	OrderBy:          "t.id ASC",
+	MutableColumns:   columnSet("phone_number", "address", "description", "email", "work_schedule"),
+	RequiredOnCreate: columnSet(),
+}
+
 var phonePattern = regexp.MustCompile(`^\+?[0-9]{7,15}$`)
 var adminOrderClausePattern = regexp.MustCompile(`^t\.([a-zA-Z_][a-zA-Z0-9_]*)\s+(ASC|DESC)$`)
 var loggedAdminOrderFallbacks sync.Map
@@ -86,6 +94,8 @@ func main() {
 	mux.HandleFunc("/tuning", app.tuningHandler)
 	mux.HandleFunc("/service_offerings", app.serviceOfferingsHandler)
 	mux.HandleFunc("/privacy_sections", app.privacySectionsHandler)
+	mux.HandleFunc("/api/contacts", app.contactsCRUDHandler)
+	mux.HandleFunc("/api/contacts/", app.contactsCRUDHandler)
 	mux.HandleFunc("/api/consultations", app.consultationsHandler)
 	mux.HandleFunc("/portfolio_items", app.portfolioItemsHandler)
 	mux.HandleFunc("/work_post", app.workPostHandler)
@@ -280,6 +290,60 @@ func (a *App) contactHandler(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(contacts); err != nil {
 		http.Error(w, "failed to encode response", http.StatusInternalServerError)
 		return
+	}
+}
+
+func (a *App) contactsCRUDHandler(w http.ResponseWriter, r *http.Request) {
+	id, hasID, err := parseResourceID(r, contactsAPIConfig.Path)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"status":  "error",
+			"message": "invalid id",
+		})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		if hasID {
+			a.adminFetchOne(w, r, contactsAPIConfig, id)
+			return
+		}
+		a.adminFetchMany(w, r, contactsAPIConfig)
+	case http.MethodPost:
+		if !requireAdminToken(w, r) {
+			return
+		}
+		a.adminCreateOne(w, r, contactsAPIConfig)
+	case http.MethodPut, http.MethodPatch:
+		if !requireAdminToken(w, r) {
+			return
+		}
+		if !hasID {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"status":  "error",
+				"message": "id is required",
+			})
+			return
+		}
+		a.adminUpdateOne(w, r, contactsAPIConfig, id)
+	case http.MethodDelete:
+		if !requireAdminToken(w, r) {
+			return
+		}
+		if !hasID {
+			writeJSON(w, http.StatusBadRequest, map[string]any{
+				"status":  "error",
+				"message": "id is required",
+			})
+			return
+		}
+		a.adminDeleteOne(w, r, contactsAPIConfig, id)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]any{
+			"status":  "error",
+			"message": "method not allowed",
+		})
 	}
 }
 
@@ -1172,7 +1236,7 @@ func (a *App) rootHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"service":"carbon_go","status":"running","routes":["/","/healthz","/contact","/about","/banners","/partners","/tuning","/service_offerings","/privacy_sections","/api/consultations","/portfolio_items","/work_post","/admin/auth/*","/admin/*","/admin/storage/*"]}`))
+	_, _ = w.Write([]byte(`{"service":"carbon_go","status":"running","routes":["/","/healthz","/contact","/about","/banners","/partners","/tuning","/service_offerings","/privacy_sections","/api/contacts","/api/consultations","/portfolio_items","/work_post","/admin/auth/*","/admin/*","/admin/storage/*"]}`))
 }
 
 type adminAuthLoginRequest struct {
