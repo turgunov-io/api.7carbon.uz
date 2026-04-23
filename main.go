@@ -1713,7 +1713,7 @@ func (a *App) adminCreateOne(w http.ResponseWriter, r *http.Request, cfg tableCR
 		return
 	}
 	if cfg.Path == "/admin/tuning" {
-		normalizeTuningCreatePayload(payload)
+		normalizeTuningPayload(payload)
 	}
 
 	if validationErrors := validateCRUDPayload(payload, cfg.MutableColumns, cfg.RequiredOnCreate); len(validationErrors) > 0 {
@@ -1725,7 +1725,7 @@ func (a *App) adminCreateOne(w http.ResponseWriter, r *http.Request, cfg tableCR
 		return
 	}
 	if cfg.Path == "/admin/tuning" {
-		if err := a.alignTuningCreatePayloadToSchema(ctx, payload); err != nil {
+		if err := a.alignTuningPayloadToSchema(ctx, payload); err != nil {
 			log.Printf("admin create %s schema alignment failed: %v", cfg.Table, err)
 			writeJSON(w, http.StatusInternalServerError, map[string]any{
 				"status":  "error",
@@ -1805,6 +1805,9 @@ func (a *App) adminUpdateOne(w http.ResponseWriter, r *http.Request, cfg tableCR
 	if !ok {
 		return
 	}
+	if cfg.Path == "/admin/tuning" {
+		normalizeTuningPayload(payload)
+	}
 
 	if validationErrors := validateCRUDPayload(payload, cfg.MutableColumns, nil); len(validationErrors) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
@@ -1813,6 +1816,16 @@ func (a *App) adminUpdateOne(w http.ResponseWriter, r *http.Request, cfg tableCR
 			"errors":  validationErrors,
 		})
 		return
+	}
+	if cfg.Path == "/admin/tuning" {
+		if err := a.alignTuningPayloadToSchema(ctx, payload); err != nil {
+			log.Printf("admin update %s schema alignment failed: %v", cfg.Table, err)
+			writeJSON(w, http.StatusInternalServerError, map[string]any{
+				"status":  "error",
+				"message": "failed to prepare payload",
+			})
+			return
+		}
 	}
 
 	keys := sortedMapKeys(payload)
@@ -2015,11 +2028,13 @@ func isEmptyJSONValue(value any) bool {
 	return strings.TrimSpace(text) == ""
 }
 
-func normalizeTuningCreatePayload(payload map[string]any) {
+func normalizeTuningPayload(payload map[string]any) {
 	title, hasTitle := payload["title"]
 	description, hasDescription := payload["description"]
 
-	if (!hasDescription || isEmptyJSONValue(description)) && hasTitle && !isEmptyJSONValue(title) {
+	if !hasDescription && hasTitle {
+		payload["description"] = title
+	} else if isEmptyJSONValue(description) && hasTitle && !isEmptyJSONValue(title) {
 		payload["description"] = title
 	}
 
@@ -2027,7 +2042,7 @@ func normalizeTuningCreatePayload(payload map[string]any) {
 	delete(payload, "title")
 }
 
-func (a *App) alignTuningCreatePayloadToSchema(ctx context.Context, payload map[string]any) error {
+func (a *App) alignTuningPayloadToSchema(ctx context.Context, payload map[string]any) error {
 	hasTitleColumn, err := hasColumn(ctx, a.DB, "tuning", "title")
 	if err != nil {
 		return err
@@ -2038,7 +2053,7 @@ func (a *App) alignTuningCreatePayloadToSchema(ctx context.Context, payload map[
 	}
 
 	description, hasDescription := payload["description"]
-	if hasTitleColumn && hasDescription && !isEmptyJSONValue(description) {
+	if hasTitleColumn && hasDescription {
 		payload["title"] = description
 	} else {
 		delete(payload, "title")
