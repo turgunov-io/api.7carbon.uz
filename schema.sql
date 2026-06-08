@@ -7,6 +7,7 @@
 -- /banners
 -- /partners
 -- /tuning
+-- /accessories
 -- /service_offerings
 -- /privacy_sections
 -- /api/consultations
@@ -147,6 +148,95 @@ ALTER TABLE IF EXISTS public.tuning
 ALTER TABLE IF EXISTS public.tuning
     ADD COLUMN IF NOT EXISTS model TEXT;
 
+-- 8.2 Accessories posts/cards
+CREATE TABLE IF NOT EXISTS public.accessories (
+    id SERIAL PRIMARY KEY,
+    title TEXT NOT NULL,
+    card_image_url TEXT,
+    full_image_url JSONB NOT NULL DEFAULT '[]'::jsonb,
+    price TEXT,
+    description TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Ensure compatibility for already existing databases.
+-- This block safely creates/converts full_image_url to JSONB array.
+DO $$
+DECLARE col_type TEXT;
+BEGIN
+    IF to_regclass('public.accessories') IS NULL THEN
+        RETURN;
+    END IF;
+
+    ALTER TABLE public.accessories
+        ADD COLUMN IF NOT EXISTS title TEXT;
+
+    UPDATE public.accessories
+       SET title = 'Accessory'
+     WHERE title IS NULL OR btrim(title) = '';
+
+    ALTER TABLE public.accessories
+        ALTER COLUMN title SET NOT NULL;
+
+    ALTER TABLE public.accessories
+        ADD COLUMN IF NOT EXISTS card_image_url TEXT;
+
+    ALTER TABLE public.accessories
+        ADD COLUMN IF NOT EXISTS price TEXT;
+
+    ALTER TABLE public.accessories
+        ADD COLUMN IF NOT EXISTS description TEXT;
+
+    ALTER TABLE public.accessories
+        ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+    ALTER TABLE public.accessories
+        ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+    SELECT data_type
+      INTO col_type
+      FROM information_schema.columns
+     WHERE table_schema = 'public'
+       AND table_name = 'accessories'
+       AND column_name = 'full_image_url';
+
+    IF col_type IS NULL THEN
+        ALTER TABLE public.accessories
+            ADD COLUMN full_image_url JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ELSIF col_type <> 'jsonb' THEN
+        ALTER TABLE public.accessories
+            ALTER COLUMN full_image_url TYPE JSONB
+            USING CASE
+                WHEN full_image_url IS NULL OR btrim(full_image_url::text) = '' THEN '[]'::jsonb
+                WHEN left(btrim(full_image_url::text), 1) = '[' THEN full_image_url::jsonb
+                ELSE jsonb_build_array(full_image_url)
+            END;
+        ALTER TABLE public.accessories
+            ALTER COLUMN full_image_url SET DEFAULT '[]'::jsonb;
+        UPDATE public.accessories
+           SET full_image_url = '[]'::jsonb
+         WHERE full_image_url IS NULL;
+        ALTER TABLE public.accessories
+            ALTER COLUMN full_image_url SET NOT NULL;
+    ELSE
+        ALTER TABLE public.accessories
+            ALTER COLUMN full_image_url SET DEFAULT '[]'::jsonb;
+        UPDATE public.accessories
+           SET full_image_url = '[]'::jsonb
+         WHERE full_image_url IS NULL;
+        ALTER TABLE public.accessories
+            ALTER COLUMN full_image_url SET NOT NULL;
+    END IF;
+
+    ALTER TABLE public.accessories
+        DROP CONSTRAINT IF EXISTS accessories_full_image_url_is_array_chk;
+
+    ALTER TABLE public.accessories
+        ADD CONSTRAINT accessories_full_image_url_is_array_chk
+        CHECK (jsonb_typeof(full_image_url) = 'array');
+END $$;
+
 -- 9. About page
 CREATE TABLE IF NOT EXISTS public.about_page (
     id SMALLINT PRIMARY KEY DEFAULT 1,
@@ -276,6 +366,9 @@ CREATE INDEX IF NOT EXISTS idx_blog_posts_created_at_id
 CREATE INDEX IF NOT EXISTS idx_tuning_created_at_id
     ON public.tuning (created_at DESC, id DESC);
 
+CREATE INDEX IF NOT EXISTS idx_accessories_created_at_id
+    ON public.accessories (created_at DESC, id DESC);
+
 CREATE INDEX IF NOT EXISTS idx_service_offerings_type_position
     ON public.service_offerings (service_type, position, id);
 
@@ -401,6 +494,7 @@ COMMIT;
 -- SELECT COUNT(*) FROM public.banners;
 -- SELECT COUNT(*) FROM public.partners;
 -- SELECT COUNT(*) FROM public.tuning;
+-- SELECT COUNT(*) FROM public.accessories;
 -- SELECT COUNT(*) FROM public.service_offerings;
 -- SELECT COUNT(*) FROM public.privacy_sections;
 -- SELECT COUNT(*) FROM public.consultations;

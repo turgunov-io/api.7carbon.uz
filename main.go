@@ -92,6 +92,7 @@ func main() {
 	mux.HandleFunc("/banners", app.bannersHandler)
 	mux.HandleFunc("/partners", app.partnersHandler)
 	mux.HandleFunc("/tuning", app.tuningHandler)
+	mux.HandleFunc("/accessories", app.accessoriesHandler)
 	mux.HandleFunc("/service_offerings", app.serviceOfferingsHandler)
 	mux.HandleFunc("/privacy_sections", app.privacySectionsHandler)
 	mux.HandleFunc("/api/contacts", app.contactsCRUDHandler)
@@ -684,6 +685,79 @@ func (a *App) tuningHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (a *App) accessoriesHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), readTimeout)
+	defer cancel()
+
+	rows, err := a.DB.QueryContext(
+		ctx,
+		`SELECT id, title, card_image_url, full_image_url, price, description, created_at, updated_at
+		FROM public.accessories
+		ORDER BY created_at DESC, id DESC`,
+	)
+	if err != nil {
+		http.Error(w, "failed to fetch accessories", http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	type accessoryItem struct {
+		ID           int       `json:"id"`
+		Title        string    `json:"title"`
+		CardImageURL *string   `json:"card_image_url"`
+		FullImageURL []string  `json:"full_image_url"`
+		Price        *string   `json:"price"`
+		Description  *string   `json:"description"`
+		CreatedAt    time.Time `json:"created_at"`
+		UpdatedAt    time.Time `json:"updated_at"`
+	}
+
+	items := make([]accessoryItem, 0, 8)
+	for rows.Next() {
+		var item accessoryItem
+		var cardImageURL sql.NullString
+		var fullImageURLRaw []byte
+		var price sql.NullString
+		var description sql.NullString
+
+		if err := rows.Scan(
+			&item.ID,
+			&item.Title,
+			&cardImageURL,
+			&fullImageURLRaw,
+			&price,
+			&description,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			http.Error(w, "failed to read accessories", http.StatusInternalServerError)
+			return
+		}
+
+		item.CardImageURL = nullableString(cardImageURL)
+		item.FullImageURL = parseStringArray(fullImageURLRaw)
+		item.Price = nullableString(price)
+		item.Description = nullableString(description)
+
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		http.Error(w, "failed to read accessories", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(items); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		return
+	}
+}
+
 func (a *App) portfolioItemsHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -1236,7 +1310,7 @@ func (a *App) rootHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"service":"carbon_go","status":"running","routes":["/","/healthz","/contact","/about","/banners","/partners","/tuning","/service_offerings","/privacy_sections","/api/contacts","/api/consultations","/portfolio_items","/work_post","/admin/auth/*","/admin/*","/admin/storage/*"]}`))
+	_, _ = w.Write([]byte(`{"service":"carbon_go","status":"running","routes":["/","/healthz","/contact","/about","/banners","/partners","/tuning","/accessories","/service_offerings","/privacy_sections","/api/contacts","/api/consultations","/portfolio_items","/work_post","/admin/auth/*","/admin/*","/admin/storage/*"]}`))
 }
 
 type adminAuthLoginRequest struct {
@@ -1440,6 +1514,15 @@ func (a *App) registerAdminCRUDRoutes(mux *http.ServeMux) {
 			OrderBy:          "t.created_at DESC, t.id DESC",
 			MutableColumns:   columnSet("brand", "model", "card_image_url", "full_image_url", "price", "description", "card_description", "full_description", "video_image_url", "video_link"),
 			RequiredOnCreate: columnSet(),
+			JSONColumns:      columnSet("full_image_url"),
+			TouchUpdatedAt:   true,
+		},
+		{
+			Path:             "/admin/accessories",
+			Table:            "public.accessories",
+			OrderBy:          "t.created_at DESC, t.id DESC",
+			MutableColumns:   columnSet("title", "card_image_url", "full_image_url", "price", "description"),
+			RequiredOnCreate: columnSet("title"),
 			JSONColumns:      columnSet("full_image_url"),
 			TouchUpdatedAt:   true,
 		},
